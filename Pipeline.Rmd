@@ -1,0 +1,180 @@
+---
+title: "Ezrin Pipeline"
+author: "Ralph Khalife"
+date: "2025-11-19"
+output: html_document
+---
+
+```{r}
+
+############################################################
+# EZR (Ezrin / VIL2) Expression + Survival Analysis Pipeline
+# Correct Ensembl ID: ENSG00000092820
+# Dataset: TCGA-BRCA (STAR - Counts)
+############################################################
+
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(dplyr)
+library(edgeR)
+library(ggplot2)
+library(survival)
+library(survminer)
+
+############################################################
+# STEP 1A — Download TCGA-BRCA STAR-Counts Data
+############################################################
+
+query <- GDCquery(
+  project = "TCGA-BRCA",
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+
+GDCdownload(query)
+brca_data <- GDCprepare(query)
+
+############################################################
+# STEP 1B — Extract EZR expression (raw counts)
+############################################################
+
+expr <- assay(brca_data)            # Count matrix (genes × samples)
+genes <- rowData(brca_data)         # Gene metadata
+
+# Confirm gene exists
+grep("ENSG00000092820", rownames(expr), value = TRUE)
+
+# Extract EZR raw counts
+ezr_expr <- expr["ENSG00000092820", ]
+
+# Build sample metadata
+meta <- as.data.frame(colData(brca_data))
+meta$barcode <- substr(meta$barcode, 1, 12)
+
+# Build main dataframe
+df_ezr <- data.frame(
+  barcode = meta$barcode,
+  SampleType = meta$sample_type,
+  RawCount = as.numeric(ezr_expr)
+)
+
+############################################################
+# STEP 1C — Normalize Expression (log2-CPM)
+############################################################
+
+dge <- DGEList(counts = expr)
+dge <- calcNormFactors(dge)                         # TMM normalization
+logcpm <- cpm(dge, log = TRUE, prior.count = 1)     # log2-CPM
+
+# Extract EZR normalized values
+ezr_logcpm <- logcpm["ENSG00000092820", ]
+
+# Match samples
+sample_barcodes <- substr(colnames(expr), 1, 12)
+df_ezr$logCPM <- ezr_logcpm[ match(df_ezr$barcode, sample_barcodes) ]
+
+############################################################
+# STEP 1D — Expression Boxplot: Tumor vs Normal
+############################################################
+
+ggplot(df_ezr, aes(x = SampleType, y = logCPM, fill = SampleType)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(
+    title = "EZR (VIL2) Expression in TCGA-BRCA (log2-CPM)",
+    x = "",
+    y = "log2(CPM)"
+  ) +
+  theme(legend.position = "none")
+
+ggsave("figs/EZR_BRCA_logCPM_Boxplot.png", width = 6, height = 4)
+
+############################################################
+# STEP 1E — Summary Statistics
+############################################################
+
+summary_table <- df_ezr %>%
+  group_by(SampleType) %>%
+  summarise(
+    mean_logCPM = mean(logCPM, na.rm = TRUE),
+    median_logCPM = median(logCPM, na.rm = TRUE),
+    sd_logCPM = sd(logCPM, na.rm = TRUE)
+  )
+
+dir.create("results", showWarnings = FALSE)
+write.csv(summary_table, "results/EZR_BRCA_expression_summary.csv",
+          row.names = FALSE)
+
+############################################################
+# STEP 2A — Clinical Data (Survival)
+############################################################
+
+clinical <- GDCquery_clinic("TCGA-BRCA", "clinical")
+
+clinical_clean <- clinical %>%
+  select(bcr_patient_barcode, vital_status, days_to_death, days_to_last_follow_up) %>%
+  mutate(
+    days_to_death = as.numeric(days_to_death),
+    days_to_last_follow_up = as.numeric(days_to_last_follow_up),
+    time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_follow_up),
+    status = ifelse(vital_status == "Dead", 1, 0)
+  ) %>%
+  filter(!is.na(time))
+
+############################################################
+# STEP 2B — Merge Expression + Clinical
+############################################################
+
+surv_df <- merge(
+  df_ezr[, c("barcode", "logCPM")],
+  clinical_clean,
+  by.x = "barcode",
+  by.y = "bcr_patient_barcode"
+)
+
+names(surv_df)[2] <- "Expression"   # Rename for KM
+
+# Remove duplicates / missing
+surv_df <- surv_df[!duplicated(surv_df$barcode) & !is.na(surv_df$Expression), ]
+
+############################################################
+# STEP 2C — Create High/Low EZR expression groups
+############################################################
+
+median_exp <- median(surv_df$Expression, na.rm = TRUE)
+
+surv_df <- surv_df %>%
+  mutate(Group = ifelse(Expression > median_exp, "High", "Low"))
+
+############################################################
+# STEP 2D — Kaplan–Meier Survival Curve
+############################################################
+
+surv_object <- Surv(time = surv_df$time, event = surv_df$status)
+fit <- survfit(surv_object ~ Group, data = surv_df)
+
+km_plot <- ggsurvplot(
+  fit,
+  data = surv_df,
+  pval = TRUE,
+  conf.int = TRUE,
+  risk.table = TRUE,
+  risk.table.col = "strata",
+  palette = c("#E7B800", "#2E9FDF"),
+  title = "Kaplan–Meier Survival Curve for EZR (VIL2) in TCGA-BRCA",
+  xlab = "Days",
+  ylab = "Overall Survival Probability",
+  surv.median.line = "hv"
+)
+
+ggsave("figs/EZR_BRCA_KMcurve.png",
+       km_plot$plot, width = 6, height = 5)
+
+############################################################
+# END OF FULL PIPELINE
+############################################################
+
+
+```
+
