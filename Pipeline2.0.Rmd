@@ -1,0 +1,169 @@
+---
+title: "General-Pipeline"
+author: "Ralph Khalife"
+date: "2025-11-24"
+output: html_document
+---
+
+```{r}
+# ---- Setup ----
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(dplyr)
+library(edgeR)
+library(ggplot2)
+library(survival)
+library(survminer)
+
+dir.create("figs", showWarnings = FALSE)
+dir.create("results", showWarnings = FALSE)
+
+# PODXL Ensembl ID (no version)
+PODXL_ENSG <- "ENSG00000128567"
+
+```
+
+```{r}
+# ---- Step 1: Download data for one TCGA project ----
+project_id <- "TCGA-KIRC"   # change to TCGA-STAD, TCGA-LIHC, etc.
+
+query <- GDCquery(
+  project = project_id,
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+
+GDCdownload(query)
+se <- GDCprepare(query)
+```
+```{r}
+# ---- Step 2: Extract PODXL expression + normalize ----
+
+expr  <- assay(se)
+genes <- rowData(se)
+meta  <- as.data.frame(colData(se))
+
+# robust match for PODXL row (handles version suffix)
+podxl_row <- grep(paste0("^", PODXL_ENSG), rownames(expr), value = TRUE)[1]
+
+podxl_counts <- expr[podxl_row, ]
+
+dge <- DGEList(counts = expr)
+dge <- calcNormFactors(dge)
+logcpm <- cpm(dge, log = TRUE, prior.count = 1)
+
+podxl_logcpm <- logcpm[podxl_row, ]
+
+meta$barcode_short <- substr(meta$barcode, 1, 12)
+
+df_podxl <- data.frame(
+  barcode   = meta$barcode_short,
+  SampleType = meta$sample_type,
+  RawCount  = as.numeric(podxl_counts),
+  logCPM    = as.numeric(podxl_logcpm)
+)
+
+head(df_podxl)
+
+```
+```{r}
+# ---- Step 3: Expression: tumor vs normal ----
+
+p_box <- ggplot(df_podxl, aes(x = SampleType, y = logCPM, fill = SampleType)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(
+    title = paste("PODXL Expression in", project_id, "(log2-CPM)"),
+    x = "",
+    y = "log2(CPM)"
+  ) +
+  theme(legend.position = "none")
+
+p_box
+ggsave(paste0("figs/PODXL_", project_id, "_logCPM_Boxplot.png"),
+       p_box, width = 6, height = 4)
+
+summary_podxl <- df_podxl %>%
+  group_by(SampleType) %>%
+  summarise(
+    n = n(),
+    mean_logCPM = mean(logCPM, na.rm = TRUE),
+    median_logCPM = median(logCPM, na.rm = TRUE),
+    sd_logCPM = sd(logCPM, na.rm = TRUE)
+  )
+
+summary_podxl
+write.csv(summary_podxl,
+          paste0("results/PODXL_", project_id, "_expression_summary.csv"),
+          row.names = FALSE)
+
+```
+```{r}
+# ---- Step 4: Clinical data + merge ----
+
+clinical <- GDCquery_clinic(project_id, "clinical")
+
+clinical_clean <- clinical %>%
+  select(bcr_patient_barcode,
+         vital_status,
+         days_to_death,
+         days_to_last_follow_up) %>%
+  mutate(
+    days_to_death = as.numeric(days_to_death),
+    days_to_last_follow_up = as.numeric(days_to_last_follow_up),
+    time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_follow_up),
+    status = ifelse(vital_status == "Dead", 1, 0)
+  ) %>%
+  filter(!is.na(time))
+
+surv_df <- merge(
+  df_podxl[, c("barcode", "logCPM")],
+  clinical_clean,
+  by.x = "barcode",
+  by.y = "bcr_patient_barcode"
+)
+
+names(surv_df)[2] <- "Expression"
+
+surv_df <- surv_df[!duplicated(surv_df$barcode) &
+                     !is.na(surv_df$Expression), ]
+
+nrow(surv_df)
+
+```
+```{r}
+# ---- Step 5: KM and Cox for PODXL ----
+
+median_exp <- median(surv_df$Expression, na.rm = TRUE)
+
+surv_df <- surv_df %>%
+  mutate(Group = ifelse(Expression > median_exp, "High", "Low"))
+
+surv_object <- Surv(time = surv_df$time, event = surv_df$status)
+fit <- survfit(surv_object ~ Group, data = surv_df)
+
+km_plot <- ggsurvplot(
+  fit,
+  data = surv_df,
+  pval = TRUE,
+  conf.int = TRUE,
+  risk.table = TRUE,
+  risk.table.col = "strata",
+  palette = c("#E7B800", "#2E9FDF"),
+  title = paste("KM for PODXL in", project_id),
+  xlab = "Days",
+  ylab = "Overall Survival Probability",
+  surv.median.line = "hv"
+)
+
+km_plot
+ggsave(paste0("figs/PODXL_", project_id, "_KMcurve.png"),
+       km_plot$plot, width = 6, height = 5)
+
+cox_podxl <- coxph(Surv(time, status) ~ Expression, data = surv_df)
+summary(cox_podxl)
+
+```
+
+
