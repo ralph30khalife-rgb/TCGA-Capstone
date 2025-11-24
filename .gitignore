@@ -1,4 +1,79 @@
-.Rproj.user
+# -------------------------
+# R / RStudio files to ignore
+# -------------------------
 .Rhistory
 .RData
 .Ruserdata
+.Rproj.user/
+.Rapp.history
+
+# -------------------------
+# R Markdown cache + tmp
+# -------------------------
+cache/
+*_cache/
+*.utf8.md
+*.knit.md
+
+# -------------------------
+# Large TCGA data files
+# (DO NOT upload to GitHub)
+# -------------------------
+*.rds
+*.RDS
+*.rda
+*.RData
+*.h5
+*.gz
+*.tar
+*.zip
+*.bam
+*.bai
+*.maf
+*.vcf
+*.txt.gz
+
+# TCGAbiolinks GDC downloads (huge)
+GDCdata/
+GDCdownload/
+GDCharmonized/
+**/GDCdata/
+**/GDCdownload/
+
+# -------------------------
+# Output folders
+# (You can choose to track them or not)
+# Keep figs/ and results/, ignore everything else
+# -------------------------
+
+# Ignore temporary plots
+*.png
+*.jpg
+*.jpeg
+*.tiff
+
+# EXCEPT your final result folders:
+!figs/
+!results/
+!figs/*.png
+!results/*.csv
+!results/*.tsv
+
+# -------------------------
+# Log files
+# -------------------------
+*.log
+*.tmp
+*.out
+
+# -------------------------
+# System-specific
+# -------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------
+# Python / reticulate (if used)
+# -------------------------
+__pycache__/
+*.pyc
