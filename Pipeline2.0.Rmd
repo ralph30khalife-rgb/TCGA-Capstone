@@ -19,7 +19,7 @@ dir.create("figs", showWarnings = FALSE)
 dir.create("results", showWarnings = FALSE)
 
 # ---- Configure Cancer Type Here ----
-project_id <- "TCGA-READ"     # <<<<<<<< CHANGE THIS ONLY EACH TIME
+project_id <- "TCGA-COAD"     # <<<<<<<< CHANGE THIS ONLY EACH TIME
 
 # ---- Gene ID (PODXL) ----
 podxl_id <- "ENSG00000128567"
