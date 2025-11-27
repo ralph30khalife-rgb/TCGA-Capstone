@@ -18,14 +18,16 @@ library(survminer)
 dir.create("figs", showWarnings = FALSE)
 dir.create("results", showWarnings = FALSE)
 
-# PODXL Ensembl ID (no version)
+# ---- Configure Cancer Type Here ----
+project_id <- "TCGA-READ"     # <<<<<<<< CHANGE THIS ONLY EACH TIME
+
+# ---- Gene ID (PODXL) ----
 podxl_id <- "ENSG00000128567"
 
 ```
 
 ```{r}
 # ---- Step 1: Download data for one TCGA project ----
-project_id <- "TCGA-KIRC"   # change to TCGA-STAD, TCGA-LIHC, etc.
 
 query <- GDCquery(
   project = project_id,
@@ -49,6 +51,7 @@ podxl_row <- grep(paste0("^", podxl_id), rownames(expr), value = TRUE)[1]
 
 PODXL_counts <- expr[podxl_row, ]
 
+# Normalization
 dge <- DGEList(counts = expr)
 dge <- calcNormFactors(dge)
 logcpm <- cpm(dge, log = TRUE, prior.count = 1)
@@ -84,7 +87,7 @@ p_box <- ggplot(df_podxl, aes(x = SampleType, y = logCPM, fill = SampleType)) +
 
 p_box
 
-ggsave(paste0("figs/PODXL_", project_id, "_logCPM_Boxplot.png"),
+ggsave(paste0("figs/PODXL_", project_id, "_Boxplot.png"),
        p_box, width = 6, height = 4)
 
 summary_podxl <- df_podxl %>%
@@ -96,10 +99,8 @@ summary_podxl <- df_podxl %>%
     sd_logCPM = sd(logCPM, na.rm = TRUE)
   )
 
-summary_podxl
-
 write.csv(summary_podxl,
-          paste0("results/PODXL_", project_id, "_expression_summary.csv"),
+          paste0("results/PODXL_", project_id, "_ExpressionSummary.csv"),
           row.names = FALSE)
 
 ```
@@ -169,7 +170,6 @@ write.csv(cox_output,
           row.names = FALSE)
 
 cox_output
-
 
 ```
 
