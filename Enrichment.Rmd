@@ -1,0 +1,167 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-12-05"
+---
+
+```{r}
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(dplyr)
+library(edgeR)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(enrichplot)
+
+# DIRECTORIES
+dir.create("results/coexpression", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/enrichment", recursive = TRUE, showWarnings = FALSE)
+dir.create("figs/enrichment", recursive = TRUE, showWarnings = FALSE)
+
+# MODIFY THESE:
+project_id <- "TCGA-GBM"
+gene_id    <- "ENSG00000092820" 
+gene_name  <- "EZR"
+
+```
+
+```{r}
+query <- GDCquery(
+  project = project_id,
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+
+GDCdownload(query)
+se <- GDCprepare(query)
+
+expr <- assay(se)
+
+# Clean Ensembl IDs
+ens_ids <- gsub("\\..*", "", rownames(expr))
+rownames(expr) <- ens_ids
+
+# Extract gene SYMBOL column (different TCGA datasets name this differently)
+symbol_col <- intersect(
+  c("external_gene_name", "gene_name", "symbol"),
+  colnames(rowData(se))
+)[1]
+
+if (is.na(symbol_col)) stop("No SYMBOL column in rowData!")
+
+gene_symbols <- rowData(se)[, symbol_col]
+names(gene_symbols) <- rownames(expr)  # map ENSG → SYMBOL
+
+```
+
+```{r}
+dge <- DGEList(counts = expr)
+dge <- calcNormFactors(dge)
+logcpm <- cpm(dge, log = TRUE, prior.count = 1)
+
+gene_row <- grep(paste0("^", gene_id), rownames(expr), value = TRUE)[1]
+gene_logcpm <- logcpm[gene_row, ]
+
+```
+
+```{r}
+# Compute Pearson correlation vs all genes
+cors <- apply(logcpm, 1, function(x) cor(x, gene_logcpm, use = "pairwise"))
+
+# Select genes with |r| > 0.6
+coexpressed_ids <- names(cors)[abs(cors) > 0.6 & names(cors) != gene_id]
+
+# Convert ENSG → SYMBOL
+coexpressed_symbols <- gene_symbols[coexpressed_ids]
+coexpressed_symbols <- coexpressed_symbols[!is.na(coexpressed_symbols)]
+
+# Save coexpression table
+coexp_df <- data.frame(
+  ENSG = coexpressed_ids,
+  SYMBOL = coexpressed_symbols,
+  Correlation = cors[coexpressed_ids]
+)
+
+write.csv(
+  coexp_df,
+  paste0("results/coexpression/", gene_name, "_", project_id, "_CoexpressedGenes.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
+entrez_ids <- bitr(
+  coexpressed_symbols,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+if (nrow(entrez_ids) == 0) stop("NO VALID ENTREZ IDS FOUND — cannot run enrichment.")
+entrez_unique <- unique(entrez_ids$ENTREZID)
+
+
+```
+
+```{r}
+ego <- enrichGO(
+  gene = entrez_unique,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05
+)
+
+if (!is.null(ego)) {
+  ggsave(
+    paste0("figs/enrichment/", gene_name, "_", project_id, "_GO.png"),
+    dotplot(ego, showCategory = 10),
+    width = 7, height = 6
+  )
+
+  write.csv(
+    ego@result,
+    paste0("results/enrichment/", gene_name, "_", project_id, "_GO.csv"),
+    row.names = FALSE
+  )
+}
+```
+
+```{r}
+ekegg <- enrichKEGG(
+  gene = entrez_unique,
+  organism = "hsa",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05
+)
+
+if (!is.null(ekegg)) {
+  ggsave(
+    paste0("figs/enrichment/", gene_name, "_", project_id, "_KEGG.png"),
+    dotplot(ekegg, showCategory = 10),
+    width = 7, height = 6
+  )
+
+  write.csv(
+    ekegg@result,
+    paste0("results/enrichment/", gene_name, "_", project_id, "_KEGG.csv"),
+    row.names = FALSE
+  )
+}
+
+```
+
+```{r}
+if (!is.null(ego)) {
+  p <- cnetplot(ego, showCategory = 5, foldChange = NULL)
+  ggsave(
+    paste0("figs/enrichment/", gene_name, "_", project_id, "_Network.png"),
+    p, width = 7, height = 6
+  )
+}
+
+```

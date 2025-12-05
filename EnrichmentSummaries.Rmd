@@ -1,0 +1,122 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-12-05"
+---
+
+```{r setup, include=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(stringr)
+
+gene_name <- "EZR"   # or PODXL
+cancers <- c("KIRC", "KIRP", "HNSC", "LIHC", "PAAD", "GBM")
+
+dir.create("results/SummaryTables", showWarnings = FALSE)
+
+summary_list <- list()
+
+for (cancer in cancers) {
+
+  # ---- load coexpression file ----
+  coexp_path <- paste0("results/coexpression/", gene_name, "_TCGA-", cancer, "_CoexpressedGenes.csv")
+  if (file.exists(coexp_path)) {
+    coexp <- read.csv(coexp_path)
+    n_coexp <- nrow(coexp)
+  } else {
+    n_coexp <- 0
+  }
+
+  # ---- load GO file ----
+  go_path <- paste0("results/enrichment/", gene_name, "_TCGA-", cancer, "_GO.csv")
+  if (file.exists(go_path)) {
+    go <- read.csv(go_path)
+    n_go <- nrow(go)
+  } else {
+    n_go <- 0
+  }
+
+  # ---- load KEGG file ----
+  kegg_path <- paste0("results/enrichment/", gene_name, "_TCGA-", cancer, "_KEGG.csv")
+  if (file.exists(kegg_path)) {
+    kegg <- read.csv(kegg_path)
+    n_kegg <- nrow(kegg)
+  } else {
+    n_kegg <- 0
+  }
+
+  enrichment_status <- ifelse(n_go > 0 | n_kegg > 0, "YES", "NO")
+
+  # ---- add to summary list ----
+  summary_list[[cancer]] <- data.frame(
+    Cancer = cancer,
+    n_coexpressed = n_coexp,
+    Enrichment = enrichment_status,
+    GO_terms = n_go,
+    KEGG_terms = n_kegg
+  )
+}
+
+summary_table <- bind_rows(summary_list)
+
+write.csv(summary_table,
+          paste0("results/SummaryTables/", gene_name, "_EnrichmentSummary.csv"),
+          row.names = FALSE)
+
+summary_table
+
+
+```
+
+```{r}
+p_coexp <- ggplot(summary_table,
+                  aes(x = Cancer, y = n_coexpressed, fill = Cancer)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  theme_bw() +
+  labs(
+    title = paste(gene_name, "- Coexpressed Genes per Cancer (log scale)"),
+    y = "Number of Coexpressed Genes (log10 scale)",
+    x = ""
+  )
+
+ggsave(
+  paste0("figs/enrichment/", gene_name, "_Coexpression_Log_Barplot.png"),
+  p_coexp, width = 7, height = 5
+)
+
+
+
+```
+
+```{r}
+p_go <- ggplot(summary_table, aes(x = Cancer, y = GO_terms, fill = Cancer)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  theme_bw() +
+  labs(
+    title = paste(gene_name, "- GO Terms per Cancer (log scale)"),
+    y = "GO Terms (log10 scale)",
+    x = ""
+  )
+
+ggsave(paste0("figs/enrichment/", gene_name, "_GOterms_Log_Barplot.png"),
+       p_go, width = 7, height = 5)
+
+
+```
+
+```{r}
+p3 <- ggplot(summary_table, aes(x = Cancer, y = KEGG_terms, fill = Cancer)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  theme_bw() +
+  labs(title = paste(gene_name, "- KEGG Terms per Cancer (log scale)"),
+       y = "KEGG Terms (log10 scale)", x = "")
+
+ggsave(paste0("figs/enrichment/", gene_name, "_KEGGterms_Log_Barplot.png"),
+       p3, width = 7, height = 5)
+
+
+```
