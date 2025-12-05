@@ -1,0 +1,7 @@
+"Cancer","n_coexpressed","Enrichment","GO_terms","KEGG_terms"
+"KIRC",3,"YES",30,2
+"KIRP",10,"YES",169,14
+"HNSC",1,"YES",20,2
+"LIHC",0,"NO",0,0
+"PAAD",261,"YES",3065,258
+"GBM",0,"NO",0,0
