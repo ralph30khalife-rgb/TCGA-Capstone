@@ -1,0 +1,226 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-12-03"
+---
+
+```{r}
+
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(dplyr)
+library(edgeR)
+library(ggplot2)
+
+dir.create("figs/MultiOmics", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/MultiOmics", recursive = TRUE, showWarnings = FALSE)
+
+# CHANGE THESE ONLY
+project_id <- "TCGA-HNSC"
+gene_id    <- "ENSG00000092820"   # ENSG00000128567 for PODXL OR ENSG00000092820 for EZR
+gene_name  <- "EZR"
+
+```
+
+# --- Step 4.1: Load RNA-seq data (stand-alone) ---
+```{r}
+
+query <- GDCquery(
+  project = project_id,
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+
+GDCdownload(query)
+se <- GDCprepare(query)
+
+expr <- assay(se)
+
+gene_cols <- c("external_gene_name", "gene_name", "symbol")
+
+# detect which column actually contains gene symbols
+symbol_col <- gene_cols[gene_cols %in% colnames(rowData(se))][1]
+
+if (is.na(symbol_col)) {
+    stop("No gene symbol column found in rowData(se).")
+}
+
+gene_symbols <- rowData(se)[, symbol_col]
+
+# remove Ensembl version suffixes from rownames
+ens_ids <- gsub("\\..*", "", rownames(expr))
+
+# apply unified symbols
+rownames(expr) <- ens_ids
+
+meta <- as.data.frame(colData(se))
+meta$barcode_short <- substr(meta$barcode, 1, 12)
+```
+# --- Step 4.2: Extract gene expression + normalize ---
+```{r}
+gene_row <- grep(paste0("^", gene_id), rownames(expr), value = TRUE)[1]
+counts <- expr[gene_row, ]
+
+dge <- DGEList(counts = expr)
+dge <- calcNormFactors(dge)
+logcpm <- cpm(dge, log=TRUE, prior.count=1)
+logcpm_gene <- logcpm[gene_row, ]
+
+df_gene <- data.frame(
+  barcode   = meta$barcode_short,
+  SampleType = meta$sample_type,
+  RawCount   = as.numeric(counts),
+  logCPM     = as.numeric(logcpm_gene)
+)
+
+write.csv(df_gene, paste0("results/MultiOmics/", gene_name, "_", project_id, "_Expr.csv"),
+          row.names = FALSE)
+```
+
+# --- Step 4.3: Immune Scores  ---
+```{r}
+# --- Step 4.3: Immune Scores  ---
+
+# Immune cell marker sets
+immune.genes <- list(
+  CD8_Tcells  = c("CD8A", "CD8B"),
+  T_cells     = c("CD3D", "CD3E", "CD3G"),
+  Leukocytes  = c("PTPRC")  # CD45
+)
+
+# Symbol-based expression matrix
+expr_symbol <- expr
+rownames(expr_symbol) <- gene_symbols
+expr_symbol <- expr_symbol[!is.na(rownames(expr_symbol)), ]
+
+# Compute per-sample immune scores
+get_score <- function(markers) {
+  idx <- which(rownames(expr_symbol) %in% markers)
+  if (length(idx) == 0) return(rep(NA, ncol(expr_symbol)))
+  colMeans(expr_symbol[idx, , drop = FALSE], na.rm = TRUE)
+}
+
+immune_df <- data.frame(
+  barcode         = substr(colnames(expr_symbol), 1, 12),
+  CD8_Tscore      = get_score(immune.genes$CD8_Tcells),
+  Tcell_score     = get_score(immune.genes$T_cells),
+  Leukocyte_score = get_score(immune.genes$Leukocytes)
+)
+
+# Merge with expression df
+merged_immune <- merge(df_gene, immune_df, by = "barcode")
+
+write.csv(
+  merged_immune,
+  paste0("results/MultiOmics/", gene_name, "_", project_id, "_ImmuneMerged.csv"),
+  row.names = FALSE
+)
+
+plot_imm <- function(yvar, label) {
+  p <- ggplot(merged_immune, aes(x = logCPM, y = .data[[yvar]])) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    theme_bw() +
+    labs(
+      title = paste(gene_name, "vs", label, "–", project_id),
+      x = "log2(CPM)",
+      y = label
+    )
+  ggsave(
+    paste0("figs/MultiOmics/", gene_name, "_", project_id, "_", yvar, "_scatter.png"),
+    p, width = 6, height = 4
+  )
+}
+
+plot_imm("CD8_Tscore",      "CD8 T-cell score")
+plot_imm("Tcell_score",     "T-cell score")
+plot_imm("Leukocyte_score", "Leukocyte (CD45) score")
+
+```
+
+# --- Step 4.4: TMB ---
+```{r}
+query_mut <- GDCquery(
+  project = project_id,
+  data.category = "Simple Nucleotide Variation",
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+GDCdownload(query_mut)
+mut_data <- GDCprepare(query_mut)
+
+# Standardize barcodes
+mut_data$barcode <- substr(mut_data$Tumor_Sample_Barcode, 1, 12)
+
+tmb <- mut_data %>%
+  dplyr::group_by(barcode) %>%
+  dplyr::summarise(
+    total_mutations = n()
+  )
+
+merged_tmb <- merge(df_gene, tmb, by = "barcode", all.x = TRUE)
+
+write.csv(
+  merged_tmb,
+  paste0("results/MultiOmics/", gene_name, "_", project_id, "_TMBMerged.csv"),
+  row.names = FALSE
+)
+
+```
+
+# --- Step 4.5 
+```{r}
+# --- Step 4.5: Correlation plots (Immune + TMB) ---
+
+# TMB per Mb (approx exome size 38 Mb)
+merged_tmb$TMB_perMb <- merged_tmb$total_mutations / 38
+
+# 1) Correlation: expression vs CD8 T-cell score
+cor_cd8 <- cor(merged_immune$logCPM,
+               merged_immune$CD8_Tscore,
+               use = "complete.obs")
+
+p_cd8 <- ggplot(merged_immune, aes(x = logCPM, y = CD8_Tscore)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  theme_bw() +
+  labs(
+    title    = paste(gene_name, "vs CD8 T-cell score –", project_id),
+    subtitle = paste("Pearson r =", round(cor_cd8, 3)),
+    x = "Gene expression (logCPM)",
+    y = "CD8 T-cell score"
+  )
+
+ggsave(
+  paste0("figs/MultiOmics/", gene_name, "_", project_id, "_CD8_corr.png"),
+  p_cd8, width = 6, height = 4
+)
+
+# 2) Correlation: expression vs TMB
+cor_tmb <- cor(merged_tmb$logCPM,
+               merged_tmb$TMB_perMb,
+               use = "complete.obs")
+
+p_tmb <- ggplot(merged_tmb, aes(x = logCPM, y = TMB_perMb)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  theme_bw() +
+  labs(
+    title    = paste(gene_name, "vs TMB –", project_id),
+    subtitle = paste("Pearson r =", round(cor_tmb, 3)),
+    x = "Gene expression (logCPM)",
+    y = "TMB (mut/Mb)"
+  )
+
+ggsave(
+  paste0("figs/MultiOmics/", gene_name, "_", project_id, "_TMB_corr.png"),
+  p_tmb, width = 6, height = 4
+)
+
+```
+
+
+
+

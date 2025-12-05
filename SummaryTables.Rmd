@@ -1,0 +1,57 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-12-05"
+---
+
+```{r}
+dir.create("results/SummaryTables", recursive = TRUE, showWarnings = FALSE)
+
+cancers <- c("TCGA-KIRC", "TCGA-KIRP", "TCGA-UCEC",
+             "TCGA-LUAD", "TCGA-LUSC", "TCGA-STAD",
+             "TCGA-OV", "TCGA-PAAD", "TCGA-LIHC", "TCGA-GBM",
+             "TCGA-HNSC", "TCGA-READ", "TCGA-COAD")
+
+build_summary <- function(gene_name, cancers) {
+  
+  output <- data.frame()
+
+  for (c in cancers) {
+
+    expr_file <- paste0("results/", gene_name, "_", c, "_ExpressionSummary.csv")
+    cox_file  <- paste0("results/", gene_name, "_", c, "_Cox.csv")
+
+    # Skip missing files
+    if (!file.exists(expr_file) | !file.exists(cox_file)) next
+
+    expr_df <- read.csv(expr_file)
+    cox_df  <- read.csv(cox_file)
+
+    # Extract tumor mean, tumor median, p-value, HR
+    tumor_row <- expr_df[expr_df$SampleType == "Primary Tumor", ]
+
+    new_row <- data.frame(
+      Cancer = c,
+      Mean_logCPM = tumor_row$mean_logCPM,
+      Median_logCPM = tumor_row$median_logCPM,
+      SD_logCPM = tumor_row$sd_logCPM,
+      HR = cox_df$HR,
+      p_value = cox_df$p_value
+    )
+
+    output <- rbind(output, new_row)
+  }
+
+  # Save table
+  write.csv(output,
+            paste0("results/SummaryTables/", gene_name, "_SummaryTable.csv"),
+            row.names = FALSE)
+
+  return(output)
+}
+
+podxl_summary <- build_summary("PODXL", cancers)
+ezr_summary <- build_summary("EZR", cancers)
+
+```
+
